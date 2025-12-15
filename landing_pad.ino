@@ -1,209 +1,188 @@
 #include <WiFi.h>
-#include <Adafruit_NeoPixel.h>
+#include <FastLED.h>
 
-/* ------------ LED CONFIG ------------ */
-#define LED_PIN     15
-#define NUM_LEDS    60
-#define BRIGHTNESS  50
+/* ---------- LED ---------- */
+#define LED_PIN 15
+#define NUM_LEDS 60
+CRGB leds[NUM_LEDS];
 
-Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+/* ---------- ULTRASONIC ---------- */
+#define TRIG_PIN 5
+#define ECHO_PIN 18
 
-/* ------------ SENSOR PINS ------------ */
-#define TRIG_PIN    5
-#define ECHO_PIN    18
-#define IR_PIN      34
-#define BUZZER_PIN  12
-
-/* ------------ WIFI CONFIG ------------ */
-const char* ssid = "L";
-const char* password = "123456789";
+/* ---------- WIFI ---------- */
+const char* ssid = "Hostel_1+B";
+const char* password = "abcd1234";
 WiFiServer server(80);
 
-/* ------------ VARIABLES ------------ */
-long usDist, irDist, finalDist;
-String status = "Idle";
+/* ---------- VARIABLES ---------- */
+long distanceCM = 0;
+uint8_t hue = 0;
+int pos = 0;         // LED index for spinning
+unsigned long lastBlink = 0;
+bool greenOn = false;
 
-/* ------------ FUNCTIONS ------------ */
+/* ---------- ULTRASONIC FUNCTION ---------- */
 long readUltrasonic() {
-  digitalWrite(TRIG_PIN, LOW); delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
-  long d = pulseIn(ECHO_PIN, HIGH, 25000);
-  if (!d) return 400;
-  return d * 0.034 / 2;
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 25000);
+  if (duration == 0) return -1;
+
+  return duration * 0.034 / 2;
 }
 
-long readIR() {
-  int v = analogRead(IR_PIN);
-  return map(v, 3000, 1000, 10, 80);
-}
-
-void setRing(uint8_t r, uint8_t g, uint8_t b) {
-  for (int i = 0; i < NUM_LEDS; i++)
-    strip.setPixelColor(i, strip.Color(r, g, b));
-  strip.show();
-}
-
-void approachAnim() {
-  static int p = 0;
-  strip.clear();
-  strip.setPixelColor(p, strip.Color(255,140,0));
-  strip.show();
-  p = (p + 1) % NUM_LEDS;
-}
-
-void beep() {
-  digitalWrite(BUZZER_PIN, HIGH);
-  delay(120);
-  digitalWrite(BUZZER_PIN, LOW);
-}
-
-/* ------------ SETUP ------------ */
+/* ---------- SETUP ---------- */
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("ESP32 BOOT");
+
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
 
-  strip.begin();
-  strip.setBrightness(BRIGHTNESS);
+  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUM_LEDS);
+  FastLED.clear();
+  FastLED.show();
 
-  WiFi.softAP(ssid, password);
-  server.begin();
-}
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
 
-/* ------------ LOOP ------------ */
-void loop() {
-  usDist = readUltrasonic();
-  irDist = readIR();
-  finalDist = min(usDist, irDist);
-
-  if (finalDist < 20) {
-    status = "Landing";
-    setRing(0,255,0);
-    beep();
-  } else if (finalDist < 40) {
-    status = "Approaching";
-    approachAnim();
-  } else {
-    status = "Idle";
-    strip.clear(); strip.show();
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
   }
 
+  Serial.println("\nWiFi CONNECTED");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+
+  server.begin();
+  Serial.println("HTTP SERVER STARTED");
+}
+
+/* ---------- LOOP ---------- */
+void loop() {
+
+  /* --- READ DISTANCE --- */
+  distanceCM = readUltrasonic(); // Your averaging function
+
+  // Clear LEDs for this frame
+  FastLED.clear();
+
+  unsigned long now = millis();
+
+  if (distanceCM > 0 && distanceCM < 20) {
+    // ---------- Green blinking ----------
+    if (now - lastBlink > 500) {   // blink every 500ms
+      greenOn = !greenOn;
+      lastBlink = now;
+    }
+    if (greenOn) {
+      for (int i=0;i<NUM_LEDS;i++) leds[i] = CRGB::Green;
+    }
+
+  } 
+  else if (distanceCM >= 20 && distanceCM < 40) {
+    // ---------- Orange spinning ----------
+    leds[pos] = CRGB::Orange;
+    pos = (pos + 1) % NUM_LEDS;
+  } 
+  else if (distanceCM >= 40) {
+    // ---------- Bright red slow spin ----------
+    static unsigned long lastRed = 0;
+    static int redPos = 0;
+    if (now - lastRed > 150) {   // slower than orange
+      redPos = (redPos + 1) % NUM_LEDS;
+      lastRed = now;
+    }
+    leds[redPos] = CRGB::Red;
+  }
+
+  FastLED.show();
+  pos = (pos + 1) % NUM_LEDS;
+  hue += 2;
+
+  /* --- WEB SERVER --- */
   WiFiClient client = server.available();
-  if (!client) return;
+  if (!client) {
+    delay(30);
+    return;
+  }
 
   while (!client.available()) delay(1);
   String req = client.readStringUntil('\r');
   client.flush();
 
-  /* ---- JSON API ---- */
+  /* --- JSON API --- */
   if (req.indexOf("GET /data") >= 0) {
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: application/json");
     client.println("Connection: close\n");
-    client.print("{");
-    client.print("\"status\":\"" + status + "\",");
-    client.print("\"ultrasonic\":" + String(usDist) + ",");
-    client.print("\"ir\":" + String(irDist) + ",");
-    client.print("\"final\":" + String(finalDist));
+    client.print("{\"distance\":");
+    client.print(distanceCM);
     client.print("}");
   }
 
-  /* ---- MAIN PAGE ---- */
+  /* --- MAIN PAGE --- */
   else {
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: text/html");
     client.println("Connection: close\n");
+
     client.print(R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Landing Pad</title>
-
+<title>ESP32 Landing Pad</title>
 <style>
-body {
-  margin:0;
-  background:#0f172a;
-  color:#e5e7eb;
-  font-family:Segoe UI, sans-serif;
-}
-.card {
-  max-width:360px;
-  margin:30px auto;
+body{
   background:#020617;
-  border-radius:16px;
+  color:#e5e7eb;
+  font-family:Segoe UI,sans-serif;
+  text-align:center;
+  margin-top:50px;
+}
+.card{
+  display:inline-block;
   padding:20px;
+  border-radius:16px;
   box-shadow:0 0 30px rgba(0,0,0,.6);
 }
-h1 { text-align:center; margin-bottom:10px; }
-.status {
-  text-align:center;
-  font-size:22px;
-  font-weight:bold;
-}
-.idle { color:#94a3b8; }
-.approach { color:#fb923c; }
-.landing { color:#22c55e; }
-.data {
-  margin-top:15px;
-  display:flex;
-  justify-content:space-between;
-}
-.box {
-  width:30%;
-  background:#020617;
-  border:1px solid #1e293b;
-  padding:10px;
-  border-radius:10px;
-  text-align:center;
-}
+h1{margin-bottom:10px;}
+.dist{font-size:32px;font-weight:700;}
 </style>
 </head>
 
 <body>
 <div class="card">
-  <h1>🚁 Landing Pad</h1>
-  <div id="status" class="status idle">Idle</div>
-
-  <div class="data">
-    <div class="box">
-      <div id="us">--</div>
-      <small>Ultrasonic</small>
-    </div>
-    <div class="box">
-      <div id="ir">--</div>
-      <small>IR</small>
-    </div>
-    <div class="box">
-      <div id="final">--</div>
-      <small>Final</small>
-    </div>
-  </div>
+  <h1>Landing Pad</h1>
+  <div class="dist" id="dist">-- cm</div>
 </div>
 
 <script>
-function update() {
+function update(){
   fetch('/data')
-    .then(r => r.json())
-    .then(d => {
-      status.textContent = d.status;
-      us.textContent = d.ultrasonic + " cm";
-      ir.textContent = d.ir + " cm";
-      final.textContent = d.final + " cm";
-
-      status.className = "status " +
-        (d.status=="Landing" ? "landing" :
-         d.status=="Approaching" ? "approach" : "idle");
+    .then(r=>r.json())
+    .then(d=>{
+      document.getElementById('dist').textContent =
+        d.distance + " cm";
     });
 }
-setInterval(update, 1000);
+setInterval(update,1000);
 update();
 </script>
 </body>
 </html>
 )rawliteral");
   }
+
   client.stop();
 }
