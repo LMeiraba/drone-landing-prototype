@@ -1,18 +1,19 @@
 #include <WiFi.h>
 #include <FastLED.h>
 
-/* ===================== HARDWARE CONFIG ===================== */
-// CORRECT PINS (Matching your "Old Working Code")
-#define TRIG_PIN    5   
-#define ECHO_PIN    18
-#define LED_PIN     15
+#define TRIG_PIN    25   
+#define ECHO_PIN    33
+#define LED_PIN     14
 #define BUZZER_PIN  12  
 
 #define NUM_LEDS    60
 
 /* ===================== WIFI SETTINGS ===================== */
-const char* ssid = "Hostel_1+B"; 
-const char* password = "abcd1234";
+const char* ssid = "LandingPad_AP"; 
+const char* password = "password123";
+IPAddress local_IP(192, 168, 4, 1);
+IPAddress gateway(192, 168, 4, 1);
+IPAddress subnet(255, 255, 255, 0);
 
 /* ===================== OBJECTS ===================== */
 CRGB leds[NUM_LEDS];
@@ -137,15 +138,25 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   
-  Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED) { 
-    delay(500); 
-    Serial.print("."); 
+  Serial.println("Setting up Access Point...");
+
+  // 1. Set WiFi Mode to Access Point
+  WiFi.mode(WIFI_AP);
+  if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+    Serial.println("AP Config Failed");
   }
-  Serial.println("\nWiFi Connected!");
-  Serial.print("IP: "); Serial.println(WiFi.localIP());
-  
+
+  // 3. Start the Access Point
+  // Remove 'password' argument if you want an open network
+  WiFi.softAP(ssid, password);
+
+  Serial.println("AP Created!");
+  Serial.print("Network Name: "); Serial.println(ssid);
+  Serial.print("IP Address:   "); Serial.println(WiFi.softAPIP());
+
+  // 4. Start Web Server
   server.begin();
+  Serial.println("Server started.");
 }
 
 /* ===================== HELPERS ===================== */
